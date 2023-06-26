@@ -3,6 +3,7 @@ import { useContext, useEffect, useRef, useState } from "react"
 import config from "../../config"
 import { SocketContext, } from "../../Components/SocketProvider"
 import { v4 } from "uuid"
+import { RiCameraLine, RiCameraOffLine, RiMicLine, RiMicOffLine } from "react-icons/ri"
 
 const Chat = () => {
     const { socket } = useContext(SocketContext)
@@ -19,9 +20,12 @@ const Chat = () => {
 
     const [connected, setConnected] = useState(false)
     const [connection, setConnection] = useState({})
+    const callData = useRef()
 
     const externalVideo = useRef({})
     const myVideo = useRef({})
+    const myMediaStream = useRef()
+    const externalMediaStream = useRef()
     const messagesContent = useRef({})
     const messagesContainer = useRef({})
 
@@ -29,10 +33,43 @@ const Chat = () => {
     const [scrollHeight, setScrollHeight] = useState(0)
     const [distanseToBottom, setDistanseToBottom] = useState(0)
 
-    const [media] = useState({
+    const [media, setMedia] = useState({
         video: true,
         audio: true
     })
+
+    const [externalMedia, setExternalMedia] = useState({
+        video: true,
+        audio: true
+    })
+
+    const switchMedia = (element) => {
+
+
+        if (element === 'video' && media[element]) {
+            myMediaStream.current.getVideoTracks()[0].stop()
+        }
+        if (element === 'audio' && media[element]) {
+            myMediaStream.current.getAudioTracks()[0].stop()
+        }
+        if (!media[element]) {
+            navigator.mediaDevices.getUserMedia({ ...media, [element]: !media[element] })
+                .then(mediaStream => {
+                    const [newTrack] = mediaStream.getVideoTracks()
+                    const [newAudioTrack] = mediaStream.getAudioTracks()
+                    const myVideoStream = myVideo.current
+                    myMediaStream.current = mediaStream
+                    myVideoStream.srcObject = mediaStream
+                    callData.current.peerConnection.getSenders()[0].replaceTrack(newAudioTrack)
+                    callData.current.peerConnection.getSenders()[1].replaceTrack(newTrack)
+                    myVideoStream.addEventListener('loadedmetadata', () => myVideoStream.play())
+                })
+                .catch(error => alert(error.message))
+        }
+
+        sendSwitchMediaEvent({ ...media, [element]: !media[element] })
+        setMedia({ ...media, [element]: !media[element] })
+    }
 
     const handleSubmit = event => {
         event.preventDefault()
@@ -49,6 +86,8 @@ const Chat = () => {
             setData({ message: '' })
         }
     }
+
+    const sendSwitchMediaEvent = (media) => socket.emit('media:switch', { callSocketId, media })
 
     const handleChange = ({ target: { name, value } }) => setData({ ...data, [name]: value })
 
@@ -73,6 +112,8 @@ const Chat = () => {
         setDistanseToBottom((messagesContent.current.scrollHeight - messagesContent.current.clientHeight) - top)
     })
 
+
+
     socket.on('waiting-again', () => {
         setMessages([])
         setIsWaiting(true)
@@ -81,10 +122,24 @@ const Chat = () => {
     })
 
     useEffect(() => {
+        socket.on('media:switch', media => {
+            console.log(media)
+            setExternalMedia(media)
+        })
+        return () => {
+            socket.off('media:switch', media => {
+                console.log(media)
+                setExternalMedia(media)
+            })
+        }
+    }, [])
+
+    useEffect(() => {
         // Inicialización cámara
         navigator.mediaDevices.getUserMedia(media)
             .then(mediaStream => {
-                let myVideoStream = myVideo.current
+                const myVideoStream = myVideo.current
+                myMediaStream.current = mediaStream
                 myVideoStream.srcObject = mediaStream
                 myVideoStream.addEventListener('loadedmetadata', () => myVideoStream.play())
             })
@@ -134,19 +189,16 @@ const Chat = () => {
                 setIsWaiting(false)
                 setCallSocketId(room.client.socketId)
 
-                navigator.mediaDevices.getUserMedia(media)
-                    .then(mediaStream => {
-                        const call = peer.call(room.client.peerId, mediaStream)
-                        call.on('stream', externalStream => {
-                            const video = externalVideo.current
-                            video.srcObject = externalStream
+                const call = peer.call(room.client.peerId, myMediaStream.current)
+                callData.current = call
+                call.on('stream', externalStream => {
+                    const video = externalVideo.current
+                    video.srcObject = externalStream
 
-                            video.addEventListener('loadedmetadata', () => video.play())
+                    video.addEventListener('loadedmetadata', () => video.play())
 
-                        })
-                        call.on('close', () => console.log('El loquito se fue...'))
-                    })
-                    .catch(error => alert(error.message))
+                })
+                call.on('close', () => console.log('El loquito se fue...'))
             })
 
             socket.on('call', (data) => {
@@ -155,19 +207,17 @@ const Chat = () => {
             })
 
             peer.on('call', (call) => {
-                navigator.mediaDevices.getUserMedia(media)
-                    .then(mediaStream => {
-                        call.answer(mediaStream)
+                callData.current = call
+                call.answer(myMediaStream.current)
 
-                        call.on('stream', externalStream => {
-                            const video = externalVideo.current
-                            video.srcObject = externalStream
+                call.on('stream', externalStream => {
+                    const video = externalVideo.current
+                    video.srcObject = externalStream
+                    externalMediaStream.current = externalStream
 
-                            video.addEventListener('loadedmetadata', () => video.play())
-                        })
-                        call.on('close', () => console.log('El loquito se fue...'))
-                    })
-                    .catch(error => alert(error.message))
+                    video.addEventListener('loadedmetadata', () => video.play())
+                })
+                call.on('close', () => console.log('El loquito se fue...'))
             })
         })
 
@@ -179,9 +229,29 @@ const Chat = () => {
         <div className="md:grid md:grid-cols-2 flex flex-col min-h-screen max-h-screen overflow-hidden">
             <div className="grid md:grid-cols-1 md:grid-rows-2 grid-cols-2 gap-[20px] md:max-h-screen md:h-full min-h-[200px] max-h-[200px] md:p-0 p-[5px] bg-black">
                 <div className="flex items-center justify-center relative overflow-hidden">
-                    <video className="absolute w-full" ref={externalVideo} />
+                    <video className={`absolute w-full ${((externalMedia.audio && !externalMedia.video) || (!externalMedia.video && !externalMedia.audio)) && 'blur-lg'} ${externalMedia.video && !externalMedia.audio && 'blur-[2.5px]'}`} ref={externalVideo} />
+                    {(!externalMedia.video && externalMedia.audio) &&
+                        <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center z-20">
+                            <RiCameraOffLine className="text-white text-xl" />
+                        </div>
+                    }
+                    {(!externalMedia.audio && externalMedia.video) &&
+                        <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center z-20">
+                            <RiMicOffLine className="text-white text-xl" />
+                        </div>
+                    }
+                    {(!externalMedia.audio && !externalMedia.video) &&
+                        <div className="absolute top-0 left-0 w-full h-full flex gap-2 items-center justify-center z-20">
+                            <RiCameraOffLine className="text-white text-xl" />
+                            <RiMicOffLine className="text-white text-xl" />
+                        </div>
+                    }
                 </div>
                 <div className="flex items-center justify-center relative overflow-hidden">
+                    <div className="flex gap-5 p-2 absolute left-0 top-0 bg-[#0009] z-50">
+                        <button className="text-white" onClick={() => switchMedia("video")}>{media.video ? <RiCameraLine /> : <RiCameraOffLine />}</button>
+                        <button className="text-white" onClick={() => switchMedia("audio")}>{media.audio ? <RiMicLine /> : <RiMicOffLine />}</button>
+                    </div>
                     <video className="absolute w-full" ref={myVideo} muted />
                 </div>
             </div>
